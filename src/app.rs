@@ -407,8 +407,7 @@ impl App {
                 }
 
                 NetworkEvent::Message(message) => {
-                    self.messages
-                        .push(format!("[{}] {message}", current_timestamp()));
+                    self.messages.push(format_chat_message(&message));
                 }
 
                 NetworkEvent::Disconnected => {
@@ -487,8 +486,7 @@ impl App {
             return;
         }
 
-        self.messages
-            .push(format!("[{}] {formatted_message}", current_timestamp()));
+        self.messages.push(format_chat_message(&formatted_message));
         self.input.clear();
     }
 
@@ -527,6 +525,15 @@ impl App {
         self.error_message = message;
         self.input.clear();
         self.screen = Screen::Error;
+    }
+}
+
+fn format_chat_message(message: &str) -> String {
+    let timestamp = current_timestamp();
+
+    match message.split_once(':') {
+        Some((name, body)) => format!("{name}：{body} [{timestamp}]"),
+        None => format!("{message} [{timestamp}]"),
     }
 }
 

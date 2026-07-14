@@ -350,12 +350,10 @@ fn draw_chat(frame: &mut Frame, app: &App) {
 }
 
 fn is_own_message(message: &str, name: &str) -> bool {
-    let own_prefix = format!("{name}:");
+    let protocol_prefix = format!("{name}:");
+    let display_prefix = format!("{name}：");
 
-    match message.split_once("] ") {
-        Some((_, body)) => body.starts_with(&own_prefix),
-        None => message.starts_with(&own_prefix),
-    }
+    message.starts_with(&protocol_prefix) || message.starts_with(&display_prefix)
 }
 
 // エラー内容を表示し、メニューへ戻れるようにする。
