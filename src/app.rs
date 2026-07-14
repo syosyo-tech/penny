@@ -1,6 +1,8 @@
 use std::{
     io::Write,
+    mem::MaybeUninit,
     net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream},
+    ptr,
     sync::mpsc::{Receiver, Sender},
     thread,
     time::Duration,
@@ -45,6 +47,7 @@ pub(crate) struct App {
 
     pub(crate) host_ip: String,
     pub(crate) host_port: Option<u16>,
+    is_host: bool,
 
     pub(crate) status: String,
     pub(crate) error_message: String,
@@ -74,6 +77,7 @@ impl App {
 
             host_ip: String::new(),
             host_port: None,
+            is_host: false,
 
             status: String::new(),
             error_message: String::new(),
@@ -136,7 +140,7 @@ impl App {
                 self.begin_name_input(mode);
             }
 
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                 self.should_quit = true;
             }
 
@@ -323,6 +327,7 @@ impl App {
             .unwrap_or_else(|| "127.0.0.1".to_string());
 
         self.host_port = Some(port);
+        self.is_host = true;
         self.status = "Waiting for a guest...".to_string();
         self.screen = Screen::WaitingForGuest;
 
@@ -359,6 +364,7 @@ impl App {
         let address = SocketAddr::new(ip, port);
 
         self.input.clear();
+        self.is_host = false;
         self.status = format!("Connecting to {address}...");
         self.screen = Screen::Connecting;
 
@@ -396,13 +402,19 @@ impl App {
                 }
 
                 NetworkEvent::Message(message) => {
-                    self.messages.push(message);
+                    self.messages
+                        .push(format!("[{}] {message}", current_timestamp()));
                 }
 
                 NetworkEvent::Disconnected => {
                     if self.screen == Screen::Chat {
-                        self.status = "The other user disconnected.".to_string();
                         self.stream = None;
+
+                        if self.is_host {
+                            self.status = "The other user disconnected.".to_string();
+                        } else {
+                            self.should_quit = true;
+                        }
                     }
                 }
 
@@ -469,7 +481,8 @@ impl App {
             return;
         }
 
-        self.messages.push(formatted_message);
+        self.messages
+            .push(format!("[{}] {formatted_message}", current_timestamp()));
         self.input.clear();
     }
 
@@ -493,6 +506,7 @@ impl App {
 
         self.host_ip.clear();
         self.host_port = None;
+        self.is_host = false;
 
         self.status.clear();
         self.error_message.clear();
@@ -506,5 +520,23 @@ impl App {
         self.error_message = message;
         self.input.clear();
         self.screen = Screen::Error;
+    }
+}
+
+fn current_timestamp() -> String {
+    unsafe {
+        let now = libc::time(ptr::null_mut());
+        let mut local_time = MaybeUninit::<libc::tm>::uninit();
+
+        if libc::localtime_r(&now, local_time.as_mut_ptr()).is_null() {
+            return "--:--:--".to_string();
+        }
+
+        let local_time = local_time.assume_init();
+
+        format!(
+            "{:02}:{:02}:{:02}",
+            local_time.tm_hour, local_time.tm_min, local_time.tm_sec
+        )
     }
 }

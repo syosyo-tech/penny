@@ -128,7 +128,7 @@ fn draw_menu(frame: &mut Frame, app: &App) {
 
     frame.render_widget(menu, chunks[2]);
 
-    let help = Paragraph::new("↑/↓ or j/k: Select   Enter: Confirm   q: Quit")
+    let help = Paragraph::new("↑/↓ or j/k: Select   Enter: Confirm   q/Q: Quit")
         .alignment(Alignment::Center)
         .style(Style::default().fg(Color::DarkGray));
 
@@ -311,7 +311,7 @@ fn draw_chat(frame: &mut Frame, app: &App) {
     let message_items: Vec<ListItem> = app.messages[start..]
         .iter()
         .map(|message| {
-            let is_own_message = message.starts_with(&format!("{}:", app.name));
+            let is_own_message = is_own_message(message, &app.name);
 
             let color = if is_own_message {
                 Color::Cyan
@@ -343,6 +343,15 @@ fn draw_chat(frame: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::DarkGray));
 
     frame.render_widget(help, chunks[3]);
+}
+
+fn is_own_message(message: &str, name: &str) -> bool {
+    let own_prefix = format!("{name}:");
+
+    match message.split_once("] ") {
+        Some((_, body)) => body.starts_with(&own_prefix),
+        None => message.starts_with(&own_prefix),
+    }
 }
 
 // エラー内容を表示し、メニューへ戻れるようにする。
