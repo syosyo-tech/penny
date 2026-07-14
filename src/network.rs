@@ -9,6 +9,7 @@ pub(crate) enum NetworkEvent {
     Connected {
         stream: TcpStream,
         description: String,
+        peer_address: String,
     },
     Message(String),
     Disconnected,

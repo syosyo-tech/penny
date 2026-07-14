@@ -47,6 +47,7 @@ pub(crate) struct App {
 
     pub(crate) host_ip: String,
     pub(crate) host_port: Option<u16>,
+    pub(crate) peer_address: String,
     is_host: bool,
 
     pub(crate) status: String,
@@ -77,6 +78,7 @@ impl App {
 
             host_ip: String::new(),
             host_port: None,
+            peer_address: String::new(),
             is_host: false,
 
             status: String::new(),
@@ -340,6 +342,7 @@ impl App {
                 let _ = sender.send(NetworkEvent::Connected {
                     stream,
                     description,
+                    peer_address: remote_address.to_string(),
                 });
             }
 
@@ -378,6 +381,7 @@ impl App {
                     let _ = sender.send(NetworkEvent::Connected {
                         stream,
                         description: format!("Connected to {address}"),
+                        peer_address: address.to_string(),
                     });
                 }
 
@@ -397,8 +401,9 @@ impl App {
                 NetworkEvent::Connected {
                     stream,
                     description,
+                    peer_address,
                 } => {
-                    self.start_chat(stream, description);
+                    self.start_chat(stream, description, peer_address);
                 }
 
                 NetworkEvent::Message(message) => {
@@ -428,7 +433,7 @@ impl App {
     }
 
     // 接続済みストリームを保存し、受信用スレッドを開始する。
-    fn start_chat(&mut self, stream: TcpStream, description: String) {
+    fn start_chat(&mut self, stream: TcpStream, description: String, peer_address: String) {
         let receive_stream = match stream.try_clone() {
             Ok(stream) => stream,
             Err(error) => {
@@ -440,6 +445,7 @@ impl App {
         self.stream = Some(stream);
         self.messages.clear();
         self.input.clear();
+        self.peer_address = peer_address;
         self.status = description;
         self.screen = Screen::Chat;
 
@@ -506,6 +512,7 @@ impl App {
 
         self.host_ip.clear();
         self.host_port = None;
+        self.peer_address.clear();
         self.is_host = false;
 
         self.status.clear();

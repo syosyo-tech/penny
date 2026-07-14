@@ -275,7 +275,7 @@ fn draw_chat(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Min(5),
             Constraint::Length(3),
             Constraint::Length(1),
@@ -291,6 +291,10 @@ fn draw_chat(frame: &mut Frame, app: &App) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
+        ]),
+        Line::from(vec![
+            Span::styled("Peer: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&app.peer_address, Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
