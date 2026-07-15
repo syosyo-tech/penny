@@ -54,6 +54,17 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
             );
         }
 
+        Screen::GuestFingerprintInput => {
+            draw_input_screen(
+                frame,
+                "Join as a guest",
+                "Enter host fingerprint",
+                &app.input,
+                &app.error_message,
+                "Confirm this out-of-band with the host (e.g. by voice) before entering it",
+            );
+        }
+
         Screen::WaitingForGuest => draw_waiting(frame, app),
         Screen::Connecting => draw_connecting(frame, app),
         Screen::Chat => draw_chat(frame, app),
@@ -200,9 +211,9 @@ fn draw_input_screen(
     );
 }
 
-// ホスト側で接続待ち中のIPアドレスとポートを表示する。
+// ホスト側で接続待ち中のIPアドレスとポート、証明書のフィンガープリントを表示する。
 fn draw_waiting(frame: &mut Frame, app: &App) {
-    let area = centered_rect(70, 55, frame.area());
+    let area = centered_rect(75, 65, frame.area());
 
     let port = app
         .host_port
@@ -230,8 +241,13 @@ fn draw_waiting(frame: &mut Frame, app: &App) {
             Span::styled("Port        : ", Style::default().fg(Color::DarkGray)),
             Span::styled(port, Style::default().fg(Color::Green)),
         ]),
+        Line::from(vec![
+            Span::styled("Fingerprint : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&app.host_fingerprint, Style::default().fg(Color::Green)),
+        ]),
         Line::from(""),
-        Line::from("Enter this IP address and port on the guest Mac."),
+        Line::from("Enter this IP address, port, and fingerprint on the guest Mac."),
+        Line::from("Read the fingerprint aloud (or via another trusted channel) to the guest."),
         Line::from(""),
         Line::from("Esc: Cancel"),
     ];

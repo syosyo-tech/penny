@@ -1,5 +1,6 @@
 mod app;
 mod network;
+mod tls;
 mod ui;
 
 use std::{io, sync::mpsc, time::Duration};
@@ -7,7 +8,7 @@ use std::{io, sync::mpsc, time::Duration};
 use app::App;
 use crossterm::{
     cursor::Show,
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    event::{self, Event, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -18,6 +19,9 @@ const EVENT_POLL_INTERVAL_MS: u64 = 50;
 
 // エラーが起きた場合は内容を表示して終了する。
 fn main() {
+    // TLSの暗号処理の実装(ring)をプロセス全体のデフォルトとして一度だけ登録する。
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     if let Err(error) = run() {
         eprintln!("エラー: {error}");
         std::process::exit(1);
@@ -30,7 +34,7 @@ fn run() -> io::Result<()> {
 
     let mut stdout = io::stdout();
 
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -39,12 +43,7 @@ fn run() -> io::Result<()> {
 
     disable_raw_mode()?;
 
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        Show
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, Show)?;
 
     terminal.show_cursor()?;
 

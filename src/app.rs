@@ -1,7 +1,7 @@
 use std::{
     io::Write,
     mem::MaybeUninit,
-    net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     ptr,
     sync::mpsc::{Receiver, Sender},
     thread,
@@ -11,9 +11,11 @@ use std::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::network::{get_local_ip, receive_messages, NetworkEvent};
+use crate::tls::{self, SharedTlsStream};
 
 const CONNECT_TIMEOUT_SECONDS: u64 = 5;
 const MAX_NAME_LENGTH: usize = 20;
+const FINGERPRINT_HEX_LENGTH: usize = tls::FINGERPRINT_BYTE_LENGTH * 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -30,6 +32,7 @@ pub(crate) enum Screen {
     NameInput(Mode),
     GuestIpInput,
     GuestPortInput,
+    GuestFingerprintInput,
     WaitingForGuest,
     Connecting,
     Chat,
@@ -44,9 +47,12 @@ pub(crate) struct App {
     pub(crate) input: String,
     pub(crate) name: String,
     guest_ip: String,
+    guest_port: Option<u16>,
+    guest_fingerprint: String,
 
     pub(crate) host_ip: String,
     pub(crate) host_port: Option<u16>,
+    pub(crate) host_fingerprint: String,
     pub(crate) peer_address: String,
     is_host: bool,
 
@@ -54,7 +60,7 @@ pub(crate) struct App {
     pub(crate) error_message: String,
     pub(crate) messages: Vec<String>,
 
-    stream: Option<TcpStream>,
+    stream: Option<SharedTlsStream>,
 
     network_sender: Sender<NetworkEvent>,
     network_receiver: Receiver<NetworkEvent>,
@@ -75,9 +81,12 @@ impl App {
             input: String::new(),
             name: String::new(),
             guest_ip: String::new(),
+            guest_port: None,
+            guest_fingerprint: String::new(),
 
             host_ip: String::new(),
             host_port: None,
+            host_fingerprint: String::new(),
             peer_address: String::new(),
             is_host: false,
 
@@ -106,6 +115,7 @@ impl App {
             Screen::NameInput(mode) => self.handle_name_input_key(key, mode),
             Screen::GuestIpInput => self.handle_guest_ip_key(key),
             Screen::GuestPortInput => self.handle_guest_port_key(key),
+            Screen::GuestFingerprintInput => self.handle_guest_fingerprint_key(key),
             Screen::WaitingForGuest => self.handle_waiting_key(key),
             Screen::Connecting => self.handle_connecting_key(key),
             Screen::Chat => self.handle_chat_key(key),
@@ -236,8 +246,10 @@ impl App {
 
                 match value.parse::<u16>() {
                     Ok(port) if port > 0 => {
+                        self.guest_port = Some(port);
+                        self.input.clear();
                         self.error_message.clear();
-                        self.connect_to_host(port);
+                        self.screen = Screen::GuestFingerprintInput;
                     }
                     _ => {
                         self.error_message =
@@ -250,6 +262,39 @@ impl App {
                 self.input.clear();
                 self.error_message.clear();
                 self.screen = Screen::GuestIpInput;
+            }
+
+            _ => self.edit_input(key),
+        }
+    }
+
+    // ゲスト側でホストから伝えられた証明書のフィンガープリントを入力する。
+    // これを接続後のTLSハンドシェイクで相手の証明書と照合し、なりすましを検知する。
+    fn handle_guest_fingerprint_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                let normalized = tls::normalize_fingerprint(self.input.trim());
+
+                if normalized.len() != FINGERPRINT_HEX_LENGTH {
+                    self.error_message =
+                        "フィンガープリントの形式が正しくありません。".to_string();
+                    return;
+                }
+
+                let Some(port) = self.guest_port else {
+                    return;
+                };
+
+                self.guest_fingerprint = normalized;
+                self.input.clear();
+                self.error_message.clear();
+                self.connect_to_host(port);
+            }
+
+            KeyCode::Esc => {
+                self.input.clear();
+                self.error_message.clear();
+                self.screen = Screen::GuestPortInput;
             }
 
             _ => self.edit_input(key),
@@ -307,6 +352,7 @@ impl App {
     }
 
     // 空きポートでTCPリスナーを作り、ゲストからの接続を別スレッドで待つ。
+    // 接続を受け付けたTCPソケットは、その場で生成した自己署名証明書を使ってTLSサーバとして扱う。
     fn create_host(&mut self) {
         let listener = match TcpListener::bind("0.0.0.0:0") {
             Ok(listener) => listener,
@@ -324,6 +370,24 @@ impl App {
             }
         };
 
+        let (cert, key) = match tls::generate_self_signed_cert() {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.show_error(error);
+                return;
+            }
+        };
+
+        self.host_fingerprint = tls::fingerprint_of(&cert);
+
+        let server_config = match tls::build_server_config(cert, key) {
+            Ok(config) => config,
+            Err(error) => {
+                self.show_error(error);
+                return;
+            }
+        };
+
         self.host_ip = get_local_ip()
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| "127.0.0.1".to_string());
@@ -336,15 +400,21 @@ impl App {
         let sender = self.network_sender.clone();
 
         thread::spawn(move || match listener.accept() {
-            Ok((stream, remote_address)) => {
-                let description = format!("Guest connected from {remote_address}");
+            Ok((tcp_stream, remote_address)) => match tls::accept_tls(server_config, tcp_stream) {
+                Ok(stream) => {
+                    let description = format!("Guest connected from {remote_address}");
 
-                let _ = sender.send(NetworkEvent::Connected {
-                    stream,
-                    description,
-                    peer_address: remote_address.to_string(),
-                });
-            }
+                    let _ = sender.send(NetworkEvent::Connected {
+                        stream,
+                        description,
+                        peer_address: remote_address.to_string(),
+                    });
+                }
+
+                Err(error) => {
+                    let _ = sender.send(NetworkEvent::Failed(error));
+                }
+            },
 
             Err(error) => {
                 let _ = sender.send(NetworkEvent::Failed(format!(
@@ -354,7 +424,8 @@ impl App {
         });
     }
 
-    // ゲスト側からホストのIPアドレスとポートへ接続する。
+    // ゲスト側からホストのIPアドレスとポートへ接続し、TLSクライアントとしてハンドシェイクする。
+    // ハンドシェイク中に相手の証明書のフィンガープリントが入力値と一致しなければ失敗する。
     fn connect_to_host(&mut self, port: u16) {
         let ip = match self.guest_ip.parse::<IpAddr>() {
             Ok(ip) => ip,
@@ -365,6 +436,7 @@ impl App {
         };
 
         let address = SocketAddr::new(ip, port);
+        let client_config = tls::build_client_config(&self.guest_fingerprint);
 
         self.input.clear();
         self.is_host = false;
@@ -376,7 +448,17 @@ impl App {
         thread::spawn(move || {
             let timeout = Duration::from_secs(CONNECT_TIMEOUT_SECONDS);
 
-            match TcpStream::connect_timeout(&address, timeout) {
+            let tcp_stream = match TcpStream::connect_timeout(&address, timeout) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = sender.send(NetworkEvent::Failed(format!(
+                        "ホストに接続できませんでした: {error}"
+                    )));
+                    return;
+                }
+            };
+
+            match tls::connect_tls(client_config, tcp_stream) {
                 Ok(stream) => {
                     let _ = sender.send(NetworkEvent::Connected {
                         stream,
@@ -386,9 +468,7 @@ impl App {
                 }
 
                 Err(error) => {
-                    let _ = sender.send(NetworkEvent::Failed(format!(
-                        "ホストに接続できませんでした: {error}"
-                    )));
+                    let _ = sender.send(NetworkEvent::Failed(error));
                 }
             }
         });
@@ -432,14 +512,8 @@ impl App {
     }
 
     // 接続済みストリームを保存し、受信用スレッドを開始する。
-    fn start_chat(&mut self, stream: TcpStream, description: String, peer_address: String) {
-        let receive_stream = match stream.try_clone() {
-            Ok(stream) => stream,
-            Err(error) => {
-                self.show_error(format!("通信接続を準備できませんでした: {error}"));
-                return;
-            }
-        };
+    fn start_chat(&mut self, stream: SharedTlsStream, description: String, peer_address: String) {
+        let receive_stream = stream.clone();
 
         self.stream = Some(stream);
         self.messages.clear();
@@ -490,10 +564,10 @@ impl App {
         self.input.clear();
     }
 
-    // 接続中のTCPストリームがあれば両方向を閉じる。
+    // 接続中のTLSストリームがあれば、下層のTCPソケットの両方向を閉じる。
     pub(crate) fn disconnect(&mut self) {
         if let Some(stream) = self.stream.take() {
-            let _ = stream.shutdown(Shutdown::Both);
+            stream.shutdown();
         }
     }
 
@@ -507,9 +581,12 @@ impl App {
         self.input.clear();
         self.name.clear();
         self.guest_ip.clear();
+        self.guest_port = None;
+        self.guest_fingerprint.clear();
 
         self.host_ip.clear();
         self.host_port = None;
+        self.host_fingerprint.clear();
         self.peer_address.clear();
         self.is_host = false;
 
